@@ -4,9 +4,8 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 const LINKS: [string, string][] = [
-  ["/", "Compare assistants (API)"],
-  ["/chatgpt", "Check a brand in ChatGPT"],
-  ["/settings", "Settings: API keys"],
+  ["/", "Check a brand"],
+  ["/settings", "Settings"],
 ];
 
 export function AppNav() {

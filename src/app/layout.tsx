@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "GEO Tool",
-  description: "See which products ChatGPT, Claude and Gemini recommend.",
+  title: "chatgpt-rank",
+  description: "See whether ChatGPT recommends your brand, query by query.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

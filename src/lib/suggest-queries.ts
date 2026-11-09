@@ -1,17 +1,27 @@
 // Writes the shopper queries for a ChatGPT check: a fast model turns a brand name or website into
 // queries where that brand would hope to be recommended, without naming it.
 
-import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
+import OpenAI from "openai";
+import { zodTextFormat } from "openai/helpers/zod";
 import * as z from "zod/v4";
 import type { QuerySuggestion } from "./chatgpt-types";
-import { anthropicClient } from "./providers/anthropic";
 
 const QUERY_COUNT = 5;
 const SITE_TIMEOUT_MS = 8000;
 const SITE_MAX_CHARS = 500_000;
 
 export function suggestModel(): string {
-  return process.env.QUERY_MODEL || "claude-haiku-5-5";
+  return process.env.QUERY_MODEL || "gpt-5.4-mini";
+}
+
+let client: OpenAI | undefined;
+let clientKey: string | undefined;
+
+function openaiClient(): OpenAI {
+  // A new client when the key changes on the Settings page.
+  const key = process.env.OPENAI_API_KEY;
+  if (!client || clientKey !== key) [client, clientKey] = [new OpenAI({ apiKey: key }), key];
+  return client;
 }
 
 const SuggestionSchema = z.object({
@@ -56,7 +66,7 @@ async function describeSite(input: string): Promise<string | null> {
   }
   const res = await fetch(url, {
     signal: AbortSignal.timeout(SITE_TIMEOUT_MS),
-    headers: { "user-agent": "Mozilla/5.0 (compatible; GEO-Tool)", accept: "text/html" },
+    headers: { "user-agent": "Mozilla/5.0 (compatible; chatgpt-rank)", accept: "text/html" },
   }).catch(() => null);
   if (!res?.ok) return null;
   const html = (await res.text().catch(() => "")).slice(0, SITE_MAX_CHARS);
@@ -75,22 +85,16 @@ async function describeSite(input: string): Promise<string | null> {
 
 export async function suggestQueries(input: string): Promise<QuerySuggestion> {
   const site = looksLikeWebsite(input) ? await describeSite(input) : null;
-  const response = await anthropicClient().messages.parse({
+  const response = await openaiClient().responses.parse({
     model: suggestModel(),
-    max_tokens: 8000,
-    output_config: { effort: "low", format: zodOutputFormat(SuggestionSchema) },
-    system: INSTRUCTIONS,
-    messages: [
-      {
-        role: "user",
-        content: `Brand or website: ${input}${site ? `\n\n<homepage>\n${site}\n</homepage>` : ""}`,
-      },
-    ],
+    reasoning: { effort: "low" },
+    instructions: INSTRUCTIONS,
+    input: `Brand or website: ${input}${site ? `\n\n<homepage>\n${site}\n</homepage>` : ""}`,
+    text: { format: zodTextFormat(SuggestionSchema, "suggestion") },
   });
-  if (response.stop_reason === "refusal") throw new Error("The model declined to write queries for this brand");
-  if (response.stop_reason === "max_tokens") throw new Error("The model's reply was cut off; try again");
-  const out = response.parsed_output;
-  if (!out) throw new Error("The model's reply couldn't be read; try again");
+  if (response.status === "incomplete") throw new Error("The model's reply was cut off; try again");
+  const out = response.output_parsed;
+  if (!out) throw new Error("The model declined or its reply couldn't be read; try again");
 
   const brand = out.brand.trim() || input;
   const seen = new Set<string>();

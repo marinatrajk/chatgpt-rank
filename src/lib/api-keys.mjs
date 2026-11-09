@@ -7,31 +7,12 @@ import path from "node:path";
 
 export const API_KEYS = [
   {
-    env: "ANTHROPIC_API_KEY",
-    vendor: "Anthropic",
-    assistant: "Claude",
-    provider: "claude",
-    url: "https://platform.claude.com/settings/keys",
-    required: true,
-    purpose: "Asks Claude, and reads every assistant's answers to pull out the products, so the app needs it.",
-  },
-  {
     env: "OPENAI_API_KEY",
     vendor: "OpenAI",
-    assistant: "ChatGPT",
-    provider: "chatgpt",
     url: "https://platform.openai.com/api-keys",
     required: false,
-    purpose: "Asks ChatGPT through the OpenAI API.",
-  },
-  {
-    env: "GEMINI_API_KEY",
-    vendor: "Google",
-    assistant: "Gemini",
-    provider: "gemini",
-    url: "https://aistudio.google.com/apikey",
-    required: false,
-    purpose: "Asks Gemini through the Gemini API.",
+    purpose:
+      "Writes 5 shopper queries from your brand name or website. Optional: without it, you write the queries yourself. The ChatGPT check itself needs no key.",
   },
 ];
 
@@ -53,20 +34,10 @@ export function keyFormatProblem(value) {
 
 // A free, read-only request per vendor, and the HTTP statuses that mean "this key is wrong".
 const CHECKS = {
-  ANTHROPIC_API_KEY: (key) => ({
-    url: "https://api.anthropic.com/v1/models?limit=1",
-    headers: { "x-api-key": key, "anthropic-version": "2023-06-01" },
-    invalid: [401],
-  }),
   OPENAI_API_KEY: (key) => ({
     url: "https://api.openai.com/v1/models",
     headers: { authorization: `Bearer ${key}` },
     invalid: [401],
-  }),
-  GEMINI_API_KEY: (key) => ({
-    url: "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1",
-    headers: { "x-goog-api-key": key },
-    invalid: [400, 401],
   }),
 };
 

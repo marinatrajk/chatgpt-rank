@@ -1,12 +1,8 @@
-import type { ProviderId } from "./types";
-
-export type ApiKeyEnv = "ANTHROPIC_API_KEY" | "OPENAI_API_KEY" | "GEMINI_API_KEY";
+export type ApiKeyEnv = "OPENAI_API_KEY";
 
 export interface ApiKeyInfo {
   env: ApiKeyEnv;
   vendor: string;
-  assistant: string;
-  provider: ProviderId;
   url: string;
   required: boolean;
   purpose: string;

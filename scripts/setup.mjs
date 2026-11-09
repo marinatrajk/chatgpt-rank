@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// `npm run setup`: checks Node, installs dependencies, asks for the API keys (and checks each one
-// with its vendor), saves them to .env.local, then starts the app and opens it in the browser.
-// Safe to run again: it keeps the keys you already have unless you paste new ones.
+// `npm run setup`: checks Node, installs dependencies, checks Docker and builds the browser image the
+// checks run in, asks for the optional OpenAI key (and checks it), then starts the app and opens it.
+// Safe to run again: it keeps the key you already have unless you paste a new one.
 // Uses only Node's standard library, so it works before `npm install`.
 //
 //   npm run setup               the whole thing
@@ -18,6 +18,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 process.chdir(ROOT);
 
 const MIN_NODE = [20, 9];
+const DOCKER_URL = "https://www.docker.com/products/docker-desktop/";
 const isWindows = process.platform === "win32";
 const color = process.stdout.isTTY && !process.env.NO_COLOR;
 const paint = (code) => (s) => (color ? `\x1b[${code}m${s}\x1b[0m` : String(s));
@@ -31,15 +32,15 @@ const warn = (msg) => console.log(`  ${yellow("!")} ${msg}`);
 const fail = (msg) => console.log(`  ${red("✗")} ${msg}`);
 const step = (n, title) => console.log(`\n${bold(`${n}/4  ${title}`)}`);
 
-console.log(`\n${bold("GEO Tool setup")}`);
-console.log(dim("See which products ChatGPT, Claude and Gemini recommend. Press Ctrl+C to stop at any time."));
+console.log(`\n${bold("chatgpt-rank setup")}`);
+console.log(dim("See whether ChatGPT recommends your brand. Press Ctrl+C to stop at any time."));
 
 // ---------- 1. Node ----------
 
 step(1, "Node.js");
 const [major, minor] = process.versions.node.split(".").map(Number);
 if (major < MIN_NODE[0] || (major === MIN_NODE[0] && minor < MIN_NODE[1])) {
-  fail(`You have Node ${process.versions.node}. GEO Tool needs ${MIN_NODE.join(".")} or newer.`);
+  fail(`You have Node ${process.versions.node}. chatgpt-rank needs ${MIN_NODE.join(".")} or newer.`);
   console.log(`    Install the LTS version from https://nodejs.org, open a new terminal, and run ${bold("npm run setup")} again.`);
   process.exit(1);
 }
@@ -65,7 +66,32 @@ if (upToDate) {
   ok("Installed");
 }
 
-// ---------- 3. API keys ----------
+// ---------- 3. Docker ----------
+
+step(3, "Docker");
+console.log(dim("  Each check runs a real browser on chatgpt.com inside Docker."));
+let dockerReady = false;
+const docker = spawnSync("docker", ["info", "--format", "{{.ServerVersion}}"], { encoding: "utf8", timeout: 15_000 });
+if (docker.error?.code === "ENOENT") {
+  fail(`Docker isn't installed. Install Docker Desktop from ${DOCKER_URL}, start it, and run ${bold("npm run setup")} again.`);
+} else if (docker.status !== 0) {
+  fail(`Docker is installed but not running. Start Docker Desktop, then run ${bold("npm run setup")} again.`);
+} else {
+  ok(`Docker ${docker.stdout.trim()} is running`);
+  console.log(dim("  Building the browser image (a few minutes and a large download the first time)…"));
+  const build = spawnSync("docker", ["compose", "build", "--quiet"], {
+    cwd: path.join(ROOT, "gpt-checker"),
+    stdio: "inherit",
+  });
+  if (build.status === 0) {
+    ok("Browser image ready");
+    dockerReady = true;
+  } else {
+    fail("Building the browser image failed. The error is above.");
+  }
+}
+
+// ---------- 4. OpenAI key (optional) ----------
 
 const { API_KEYS, ENV_FILE, checkKey, cleanKey, keyFormatProblem, saveEnvValues } = await import(
   "../src/lib/api-keys.mjs"
@@ -109,19 +135,15 @@ function currentValue(text, name) {
   return m ? cleanKey(m[1].replace(/\s+#.*$/, "")) : "";
 }
 
-step(3, "API keys");
-console.log(dim(`  Saved in ${ENV_FILE} on this computer only, and sent only to each vendor.`));
-console.log(dim("  Each answer is one paid API call on your account. Skip an assistant you don't need."));
-
+step(4, "OpenAI API key (optional)");
 const envText = existsSync(ENV_FILE) ? readFileSync(ENV_FILE, "utf8") : "";
 const updates = {};
-const haveKey = {};
 
 for (const key of API_KEYS) {
   const existing = currentValue(envText, key.env);
-  console.log(`\n  ${bold(key.assistant)} ${dim(`(${key.vendor})`)}${key.required ? ` ${yellow("required")}` : dim(" optional")}`);
   console.log(`  ${key.purpose}`);
   console.log(`  Get a key: ${key.url}`);
+  console.log(dim(`  Saved in ${ENV_FILE} on this computer only, and sent only to ${key.vendor}.`));
   if (process.env[key.env] && process.env[key.env] !== existing) {
     warn(`Your shell also sets ${key.env}; the app uses that one instead of ${ENV_FILE}.`);
   }
@@ -131,9 +153,7 @@ for (const key of API_KEYS) {
     const value = cleanKey((await ask(`  Paste key ${dim(`(hidden; ${hint})`)}: `, { hidden: true })) ?? "");
     if (!value) {
       if (existing) ok(`Keeping the saved key …${existing.slice(-4)}`);
-      else if (key.required) warn(`Skipped. Runs stay off until you add it on the app's Settings page.`);
-      else console.log(dim(`  Skipped. ${key.assistant} stays off; add it later on the Settings page.`));
-      haveKey[key.env] = Boolean(existing);
+      else console.log(dim("  Skipped. You'll write your own queries; add a key later on the Settings page."));
       break;
     }
     const problem = keyFormatProblem(value);
@@ -151,38 +171,21 @@ for (const key of API_KEYS) {
     if (check.status === "unknown") warn(`${check.message} Saved it anyway.`);
     else ok(`Works (…${value.slice(-4)})`);
     updates[key.env] = value;
-    haveKey[key.env] = true;
     break;
   }
 }
 
 if (Object.keys(updates).length > 0 || !existsSync(ENV_FILE)) {
   await saveEnvValues(ROOT, updates);
-  console.log();
   ok(`Saved to ${ENV_FILE}`);
-}
-
-// ---------- 4. Docker (optional) ----------
-
-step(4, "ChatGPT browser check (optional)");
-const docker = spawnSync("docker", ["info", "--format", "{{.ServerVersion}}"], { encoding: "utf8", timeout: 10_000 });
-if (docker.error?.code === "ENOENT") {
-  console.log(dim("  Docker isn't installed. Everything works without it except the \"Check a brand in ChatGPT\" page,"));
-  console.log(dim("  which drives the real chatgpt.com in a browser. To use it, install Docker Desktop:"));
-  console.log(dim("  https://www.docker.com/products/docker-desktop/"));
-} else if (docker.status !== 0) {
-  warn("Docker is installed but not running. Start Docker Desktop before using \"Check a brand in ChatGPT\".");
-} else {
-  ok(`Docker ${docker.stdout.trim()} is running`);
 }
 
 // ---------- Start ----------
 
-const ready = Boolean(haveKey.ANTHROPIC_API_KEY);
 console.log(
-  `\n${bold(ready ? "All set." : "Almost set.")} ${
-    ready ? "" : "Add your Claude key on the Settings page to start running checks."
-  }`,
+  dockerReady
+    ? `\n${bold("All set.")}`
+    : `\n${bold("Almost set.")} The app will open, but checks need Docker running (see step 3).`,
 );
 
 if (process.argv.includes("--no-start")) {
@@ -192,7 +195,7 @@ if (process.argv.includes("--no-start")) {
 }
 
 // No answer because input ended (a script, not a person): don't start a server or open a browser.
-const start = (await ask(`Start GEO Tool now? ${dim("[Y/n]")} `))?.trim().toLowerCase() ?? "n";
+const start = (await ask(`Start chatgpt-rank now? ${dim("[Y/n]")} `))?.trim().toLowerCase() ?? "n";
 rl.close();
 if (start === "n" || start === "no") {
   console.log(`\nStart it any time with ${bold("npm run dev")}, then open http://localhost:3000\n`);
@@ -209,7 +212,7 @@ function portIsFree(port) {
 
 let port = 3000;
 while (!(await portIsFree(port)) && port < 3020) port++;
-const url = `http://localhost:${port}${ready ? "" : "/settings"}`;
+const url = `http://localhost:${port}`;
 
 console.log(`\nStarting on ${bold(url)} ${dim("(Ctrl+C stops it; next time just run npm run dev)")}\n`);
 const dev = spawn("npm", ["run", "dev", "--", "-p", String(port)], { stdio: "inherit", shell: isWindows });
@@ -219,7 +222,7 @@ process.on("SIGINT", () => {}); // Ctrl+C reaches the dev server, which exits; t
 // Open the browser once the server answers.
 for (let i = 0; i < 120; i++) {
   await new Promise((r) => setTimeout(r, 500));
-  const up = await fetch(`http://127.0.0.1:${port}/api/config`, { signal: AbortSignal.timeout(30_000) })
+  const up = await fetch(`http://127.0.0.1:${port}/api/settings`, { signal: AbortSignal.timeout(30_000) })
     .then(() => true)
     .catch(() => false);
   if (up) {

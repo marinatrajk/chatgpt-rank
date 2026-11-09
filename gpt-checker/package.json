@@ -1,0 +1,23 @@
+{
+  "name": "gpt-checker",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Asks chatgpt.com a list of queries in a real browser and reports whether a brand is mentioned in each answer.",
+  "type": "module",
+  "scripts": {
+    "login": "tsx src/cli.ts login",
+    "check": "tsx src/cli.ts check",
+    "summary": "tsx src/cli.ts summary",
+    "inspect": "tsx src/cli.ts inspect",
+    "test": "tsx --test src/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "playwright": "1.64.1",
+    "tsx": "^4.23.15"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "typescript": "^6.0.3"
+  }
+}

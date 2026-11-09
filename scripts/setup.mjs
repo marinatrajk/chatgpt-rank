@@ -1,0 +1,234 @@
+#!/usr/bin/env node
+// `npm run setup`: checks Node, installs dependencies, asks for the API keys (and checks each one
+// with its vendor), saves them to .env.local, then starts the app and opens it in the browser.
+// Safe to run again: it keeps the keys you already have unless you paste new ones.
+// Uses only Node's standard library, so it works before `npm install`.
+//
+//   npm run setup               the whole thing
+//   npm run setup -- --no-start set up, but don't start the app
+
+import { spawn, spawnSync } from "node:child_process";
+import { existsSync, readFileSync, statSync } from "node:fs";
+import net from "node:net";
+import path from "node:path";
+import readline from "node:readline";
+import { fileURLToPath } from "node:url";
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+process.chdir(ROOT);
+
+const MIN_NODE = [20, 9];
+const isWindows = process.platform === "win32";
+const color = process.stdout.isTTY && !process.env.NO_COLOR;
+const paint = (code) => (s) => (color ? `\x1b[${code}m${s}\x1b[0m` : String(s));
+const bold = paint(1);
+const dim = paint(2);
+const green = paint(32);
+const red = paint(31);
+const yellow = paint(33);
+const ok = (msg) => console.log(`  ${green("✓")} ${msg}`);
+const warn = (msg) => console.log(`  ${yellow("!")} ${msg}`);
+const fail = (msg) => console.log(`  ${red("✗")} ${msg}`);
+const step = (n, title) => console.log(`\n${bold(`${n}/4  ${title}`)}`);
+
+console.log(`\n${bold("GEO Tool setup")}`);
+console.log(dim("See which products ChatGPT, Claude and Gemini recommend. Press Ctrl+C to stop at any time."));
+
+// ---------- 1. Node ----------
+
+step(1, "Node.js");
+const [major, minor] = process.versions.node.split(".").map(Number);
+if (major < MIN_NODE[0] || (major === MIN_NODE[0] && minor < MIN_NODE[1])) {
+  fail(`You have Node ${process.versions.node}. GEO Tool needs ${MIN_NODE.join(".")} or newer.`);
+  console.log(`    Install the LTS version from https://nodejs.org, open a new terminal, and run ${bold("npm run setup")} again.`);
+  process.exit(1);
+}
+ok(`Node ${process.versions.node}`);
+
+// ---------- 2. Dependencies ----------
+
+step(2, "Dependencies");
+const installed = "node_modules/.package-lock.json";
+const upToDate = existsSync(installed) && statSync(installed).mtimeMs >= statSync("package-lock.json").mtimeMs;
+if (upToDate) {
+  ok("Already installed");
+} else {
+  console.log(dim("  Installing (a minute or two the first time)…"));
+  const npm = spawnSync("npm", ["install", "--no-audit", "--no-fund", "--loglevel=error"], {
+    stdio: "inherit",
+    shell: isWindows,
+  });
+  if (npm.status !== 0) {
+    fail("npm install failed. The error is above.");
+    process.exit(1);
+  }
+  ok("Installed");
+}
+
+// ---------- 3. API keys ----------
+
+const { API_KEYS, ENV_FILE, checkKey, cleanKey, keyFormatProblem, saveEnvValues } = await import(
+  "../src/lib/api-keys.mjs"
+);
+
+const rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: Boolean(process.stdin.isTTY) });
+rl.on("SIGINT", () => {
+  console.log("\n\nSetup stopped. Nothing else was changed.");
+  process.exit(130);
+});
+// Lines are queued, so answers piped in all at once (e.g. in CI) aren't lost between questions.
+const lines = [];
+let waiting = null;
+let closed = false;
+rl.on("line", (line) => (waiting ? (waiting(line), (waiting = null)) : lines.push(line)));
+rl.on("close", () => {
+  closed = true;
+  waiting?.(null);
+  waiting = null;
+});
+// Keys are typed or pasted without echo, so they don't end up on a shared screen.
+let muted = false;
+const echo = rl._writeToOutput.bind(rl);
+rl._writeToOutput = (s) => {
+  if (!muted) echo(s);
+};
+
+/** The next line typed, or null once input has ended. */
+async function ask(question, { hidden = false } = {}) {
+  process.stdout.write(question);
+  muted = hidden && rl.terminal;
+  const answer = lines.length ? lines.shift() : closed ? null : await new Promise((r) => (waiting = r));
+  if (muted) process.stdout.write("\n");
+  else if (!rl.terminal) process.stdout.write("\n");
+  muted = false;
+  return answer;
+}
+
+function currentValue(text, name) {
+  const m = text.match(new RegExp(`^[ \\t]*${name}[ \\t]*=[ \\t]*(.*)$`, "m"));
+  return m ? cleanKey(m[1].replace(/\s+#.*$/, "")) : "";
+}
+
+step(3, "API keys");
+console.log(dim(`  Saved in ${ENV_FILE} on this computer only, and sent only to each vendor.`));
+console.log(dim("  Each answer is one paid API call on your account. Skip an assistant you don't need."));
+
+const envText = existsSync(ENV_FILE) ? readFileSync(ENV_FILE, "utf8") : "";
+const updates = {};
+const haveKey = {};
+
+for (const key of API_KEYS) {
+  const existing = currentValue(envText, key.env);
+  console.log(`\n  ${bold(key.assistant)} ${dim(`(${key.vendor})`)}${key.required ? ` ${yellow("required")}` : dim(" optional")}`);
+  console.log(`  ${key.purpose}`);
+  console.log(`  Get a key: ${key.url}`);
+  if (process.env[key.env] && process.env[key.env] !== existing) {
+    warn(`Your shell also sets ${key.env}; the app uses that one instead of ${ENV_FILE}.`);
+  }
+
+  for (;;) {
+    const hint = existing ? `Enter keeps the saved key …${existing.slice(-4)}` : "Enter skips";
+    const value = cleanKey((await ask(`  Paste key ${dim(`(hidden; ${hint})`)}: `, { hidden: true })) ?? "");
+    if (!value) {
+      if (existing) ok(`Keeping the saved key …${existing.slice(-4)}`);
+      else if (key.required) warn(`Skipped. Runs stay off until you add it on the app's Settings page.`);
+      else console.log(dim(`  Skipped. ${key.assistant} stays off; add it later on the Settings page.`));
+      haveKey[key.env] = Boolean(existing);
+      break;
+    }
+    const problem = keyFormatProblem(value);
+    if (problem) {
+      fail(problem);
+      continue;
+    }
+    process.stdout.write(dim(`  Checking with ${key.vendor}…`));
+    const check = await checkKey(key.env, value);
+    process.stdout.write(process.stdout.isTTY ? "\r\x1b[K" : "\n");
+    if (check.status === "invalid") {
+      fail(`${check.message}`);
+      continue;
+    }
+    if (check.status === "unknown") warn(`${check.message} Saved it anyway.`);
+    else ok(`Works (…${value.slice(-4)})`);
+    updates[key.env] = value;
+    haveKey[key.env] = true;
+    break;
+  }
+}
+
+if (Object.keys(updates).length > 0 || !existsSync(ENV_FILE)) {
+  await saveEnvValues(ROOT, updates);
+  console.log();
+  ok(`Saved to ${ENV_FILE}`);
+}
+
+// ---------- 4. Docker (optional) ----------
+
+step(4, "ChatGPT browser check (optional)");
+const docker = spawnSync("docker", ["info", "--format", "{{.ServerVersion}}"], { encoding: "utf8", timeout: 10_000 });
+if (docker.error?.code === "ENOENT") {
+  console.log(dim("  Docker isn't installed. Everything works without it except the \"Check a brand in ChatGPT\" page,"));
+  console.log(dim("  which drives the real chatgpt.com in a browser. To use it, install Docker Desktop:"));
+  console.log(dim("  https://www.docker.com/products/docker-desktop/"));
+} else if (docker.status !== 0) {
+  warn("Docker is installed but not running. Start Docker Desktop before using \"Check a brand in ChatGPT\".");
+} else {
+  ok(`Docker ${docker.stdout.trim()} is running`);
+}
+
+// ---------- Start ----------
+
+const ready = Boolean(haveKey.ANTHROPIC_API_KEY);
+console.log(
+  `\n${bold(ready ? "All set." : "Almost set.")} ${
+    ready ? "" : "Add your Claude key on the Settings page to start running checks."
+  }`,
+);
+
+if (process.argv.includes("--no-start")) {
+  console.log(`Start the app with ${bold("npm run dev")}, then open http://localhost:3000\n`);
+  rl.close();
+  process.exit(0);
+}
+
+// No answer because input ended (a script, not a person): don't start a server or open a browser.
+const start = (await ask(`Start GEO Tool now? ${dim("[Y/n]")} `))?.trim().toLowerCase() ?? "n";
+rl.close();
+if (start === "n" || start === "no") {
+  console.log(`\nStart it any time with ${bold("npm run dev")}, then open http://localhost:3000\n`);
+  process.exit(0);
+}
+
+function portIsFree(port) {
+  return new Promise((resolve) => {
+    const server = net.createServer();
+    server.once("error", () => resolve(false));
+    server.listen(port, "127.0.0.1", () => server.close(() => resolve(true)));
+  });
+}
+
+let port = 3000;
+while (!(await portIsFree(port)) && port < 3020) port++;
+const url = `http://localhost:${port}${ready ? "" : "/settings"}`;
+
+console.log(`\nStarting on ${bold(url)} ${dim("(Ctrl+C stops it; next time just run npm run dev)")}\n`);
+const dev = spawn("npm", ["run", "dev", "--", "-p", String(port)], { stdio: "inherit", shell: isWindows });
+dev.on("exit", (code) => process.exit(code ?? 0));
+process.on("SIGINT", () => {}); // Ctrl+C reaches the dev server, which exits; then so do we.
+
+// Open the browser once the server answers.
+for (let i = 0; i < 120; i++) {
+  await new Promise((r) => setTimeout(r, 500));
+  const up = await fetch(`http://127.0.0.1:${port}/api/config`, { signal: AbortSignal.timeout(30_000) })
+    .then(() => true)
+    .catch(() => false);
+  if (up) {
+    const [cmd, args] = isWindows
+      ? ["cmd", ["/c", "start", "", url]]
+      : process.platform === "darwin"
+        ? ["open", [url]]
+        : ["xdg-open", [url]];
+    spawn(cmd, args, { stdio: "ignore", detached: true }).on("error", () => {}).unref();
+    break;
+  }
+}

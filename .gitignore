@@ -1,0 +1,15 @@
+node_modules/
+.next/
+next-env.d.ts
+*.tsbuildinfo
+.DS_Store
+
+# secrets: API keys live only in .env.local on your machine
+.env*.local
+.env
+
+# saved runs (your queries and results stay on your machine)
+/data/
+
+# personal Claude Code settings
+.claude/settings.local.json

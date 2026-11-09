@@ -1,0 +1,8 @@
+node_modules/
+# Browser profile: holds the ChatGPT session cookies.
+user-data/
+# Everything the runs write; pairs.json is the only input.
+data/*
+!data/pairs.json
+
+.DS_Store

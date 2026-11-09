@@ -1,0 +1,18 @@
+# From this folder:
+#   docker compose build
+#   docker compose run --rm --service-ports gpt-checker npm run login
+#   docker compose run --rm --service-ports gpt-checker npm run check
+# While it runs, watch the browser at http://localhost:6080/vnc.html
+services:
+  gpt-checker:
+    build: .
+    init: true
+    shm_size: 1gb # Chromium needs more shared memory than Docker's 64 MB default
+    ports:
+      - "127.0.0.1:6080:6080" # noVNC; on a server, reach it through an SSH tunnel
+    environment:
+      - VNC_PASSWORD
+      - TZ # time zone for run ids and timestamps, e.g. TZ=Europe/Skopje
+    volumes:
+      - ./user-data:/app/user-data # the browser profile, so a login survives between runs
+      - ./data:/app/data # pairs.json in; reports, transcripts, screenshots, run.log out
